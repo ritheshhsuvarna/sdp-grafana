@@ -13,7 +13,7 @@ def get_connection():
     url = os.environ.get("MYSQL_URL")
 
     if not url:
-        raise Exception("MYSQL_URL not set")
+        raise Exception("MYSQL_URL not set in Railway variables")
 
     parsed = urlparse(url)
 
@@ -27,31 +27,25 @@ def get_connection():
 
 
 # =========================
-# SAFE VALUE EXTRACTORS
+# SAFE VALUE HANDLING
 # =========================
 def safe(val, default="Unknown"):
-    if val is None or val == "":
+    if val is None or val == "" or "request." in str(val):
         return default
     return val
 
 
-def safe_nested(obj, key, default="Unknown"):
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return safe(obj, default)
-
-
 # =========================
-# TIME CONVERTER
+# TIME CONVERSION
 # =========================
 def convert_time(value):
     try:
-        if not value:
+        if not value or "request." in str(value):
             return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         value = int(value)
 
-        # Handle milliseconds
+        # If milliseconds → convert to seconds
         if value > 10**12:
             value = value / 1000
 
@@ -95,9 +89,9 @@ def webhook():
         print("🔥 RECEIVED:", data)
 
         if not data:
-            return jsonify({"error": "No data"}), 400
+            return jsonify({"error": "No data received"}), 400
 
-        # Extract fields safely
+        # Extract values safely
         ticket_id = safe(data.get("id"))
         subject = safe(data.get("subject"))
         status = safe(data.get("status"))
@@ -106,7 +100,7 @@ def webhook():
 
         print(f"DEBUG → {ticket_id} | {status} | {priority}")
 
-        # Skip if ID missing
+        # Prevent invalid inserts
         if ticket_id == "Unknown":
             return jsonify({"error": "Invalid ticket id"}), 400
 
@@ -117,9 +111,9 @@ def webhook():
         INSERT INTO tickets (id, subject, status, priority, created_time)
         VALUES (%s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
-            subject=%s,
-            status=%s,
-            priority=%s
+            subject = VALUES(subject),
+            status = VALUES(status),
+            priority = VALUES(priority)
         """
 
         cursor.execute(query, (
@@ -127,15 +121,14 @@ def webhook():
             subject,
             status,
             priority,
-            created_time,
-            subject,
-            status,
-            priority
+            created_time
         ))
 
         conn.commit()
         cursor.close()
         conn.close()
+
+        print("✅ Inserted/Updated in DB")
 
         return jsonify({"status": "success"}), 200
 
@@ -145,15 +138,15 @@ def webhook():
 
 
 # =========================
-# ROOT (OPTIONAL)
+# ROOT CHECK
 # =========================
 @app.route("/", methods=["GET"])
 def home():
-    return "Webhook server is running 🚀", 200
+    return "Webhook running 🚀", 200
 
 
 # =========================
-# RUN
+# RUN APP
 # =========================
 if __name__ == "__main__":
     create_table()
