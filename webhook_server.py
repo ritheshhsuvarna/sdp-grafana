@@ -6,52 +6,52 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-
 # =========================
-# DB CONNECTION (MYSQL_URL)
+# DB CONNECTION (FIXED)
 # =========================
 def get_connection():
-    try:
-        url = os.environ.get("MYSQL_URL")
+    url = os.environ.get("MYSQL_URL")
 
-        if not url:
-            raise Exception("MYSQL_URL not set")
+    if not url:
+        raise Exception("MYSQL_URL not set")
 
-        parsed = urlparse(url)
+    parsed = urlparse(url)
 
-        return mysql.connector.connect(
-            host=parsed.hostname,
-            user=parsed.username,
-            password=parsed.password,
-            database=parsed.path[1:],
-            port=parsed.port
-        )
-
-    except Exception as e:
-        print("❌ DB CONNECTION ERROR:", e)
-        raise
+    return mysql.connector.connect(
+        host=parsed.hostname,
+        user=parsed.username,
+        password=parsed.password,
+        database=parsed.path[1:],
+        port=parsed.port
+    )
 
 
 # =========================
-# SAFE HELPERS
+# SAFE VALUE EXTRACTORS
 # =========================
-def extract_name(value, default="Unknown"):
-    if isinstance(value, dict):
-        return value.get("name", default)
-    return str(value or default)
+def safe(val, default="Unknown"):
+    if val is None or val == "":
+        return default
+    return val
 
 
+def safe_nested(obj, key, default="Unknown"):
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return safe(obj, default)
+
+
+# =========================
+# TIME CONVERTER
+# =========================
 def convert_time(value):
     try:
-        if isinstance(value, dict):
-            value = value.get("value")
-
         if not value:
             return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         value = int(value)
 
-        # Convert milliseconds → seconds
+        # Handle milliseconds
         if value > 10**12:
             value = value / 1000
 
@@ -62,31 +62,27 @@ def convert_time(value):
 
 
 # =========================
-# CREATE TABLE IF NOT EXISTS
+# CREATE TABLE
 # =========================
 def create_table():
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
+    conn = get_connection()
+    cursor = conn.cursor()
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS tickets (
-            id BIGINT PRIMARY KEY,
-            subject TEXT,
-            status VARCHAR(50),
-            priority VARCHAR(50),
-            created_time DATETIME
-        )
-        """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS tickets (
+        id BIGINT PRIMARY KEY,
+        subject TEXT,
+        status VARCHAR(50),
+        priority VARCHAR(50),
+        created_time DATETIME
+    )
+    """)
 
-        conn.commit()
-        cursor.close()
-        conn.close()
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-        print("✅ Table ready")
-
-    except Exception as e:
-        print("❌ Table creation error:", e)
+    print("✅ Table ready")
 
 
 # =========================
@@ -96,28 +92,24 @@ def create_table():
 def webhook():
     try:
         data = request.json
-
-        print("🔥 WEBHOOK RECEIVED:", data)
+        print("🔥 RECEIVED:", data)
 
         if not data:
-            return jsonify({"error": "No data received"}), 400
+            return jsonify({"error": "No data"}), 400
 
-        # SDP sometimes sends nested payload
-        ticket = data.get("data", {}).get("request", data)
-
-        ticket_id = ticket.get("id")
-        subject = ticket.get("subject", "")
-
-        status = extract_name(ticket.get("status"))
-        priority = extract_name(ticket.get("priority"))
-
-        created_time = convert_time(ticket.get("created_time"))
+        # Extract fields safely
+        ticket_id = safe(data.get("id"))
+        subject = safe(data.get("subject"))
+        status = safe(data.get("status"))
+        priority = safe(data.get("priority"))
+        created_time = convert_time(data.get("created_time"))
 
         print(f"DEBUG → {ticket_id} | {status} | {priority}")
 
-        # =========================
-        # INSERT INTO DB
-        # =========================
+        # Skip if ID missing
+        if ticket_id == "Unknown":
+            return jsonify({"error": "Invalid ticket id"}), 400
+
         conn = get_connection()
         cursor = conn.cursor()
 
@@ -148,8 +140,8 @@ def webhook():
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
-        print("❌ WEBHOOK ERROR:", e)
-        return jsonify({"status": "error", "message": str(e)}), 500
+        print("❌ ERROR:", e)
+        return jsonify({"error": str(e)}), 500
 
 
 # =========================
@@ -161,12 +153,9 @@ def home():
 
 
 # =========================
-# RUN APP
+# RUN
 # =========================
 if __name__ == "__main__":
-    create_table()  # Ensure table exists
-
-    port = int(os.environ.get("PORT", 5000))
-    print(f"🚀 Server running on port {port}")
-
+    create_table()
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
